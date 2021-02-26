@@ -3,7 +3,9 @@ import cv2 as cv
 import numpy as np
 
 #read the image from computer and resize
-img = cv.imread('images/ad_d2.jpg')
+im = cv.imread('images/ad_d3.jpg')
+img = cv.medianBlur(im, 3)
+#img = cv.GaussianBlur(im, (5,5), 0)
 resized_img = cv.resize(img,(500,500))
 img_original = resized_img.copy()
 
@@ -28,7 +30,7 @@ for obj in contours_list:
         max=obj['area']
         max_obj=obj
 
-cv.drawContours(img_original, max_obj['contour'], -1, (255,255,0), 3)
+cv.drawContours(img_original, max_obj['contour'], -1, (0,0,255), 3)
 c=max_obj['contour']
 
 #(
@@ -47,12 +49,22 @@ c=max_obj['contour']
 # cv.circle(img_original, extBot, 8, (255, 255, 0), -1)
 #)
 
+# Masking the part other than the number plate
+mask = np.zeros(gray.shape,np.uint8)
+new_image = cv.drawContours(mask,[c],0,255,-1,)
+new_image = cv.bitwise_and(resized_img,resized_img,mask=mask)
+cv.imshow('new after mask', new_image)
+
+kernel = cv.getStructuringElement(cv.MORPH_RECT, (5,5))
+dilate = cv.dilate(new_image, kernel, iterations=2)
+cv.imshow('Dilated', dilate)
+
 x,y,w,h = cv.boundingRect(c)
 ROI = img_original[y:y+h,x:x+w]
 cv.imshow("Largest Contour",ROI)
 image = cv.resize(ROI, None, fx=0.5, fy=0.5, interpolation=cv.INTER_AREA)
 gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
-# gray = cv.bitwise_not(gray)
+gray = cv.bitwise_not(gray)
 thresh = cv.threshold(gray, 0, 255,	cv.THRESH_BINARY | cv.THRESH_BINARY_INV | cv.THRESH_OTSU)[1]
 cv.imshow("Thresh", thresh)
 coords = np.column_stack(np.where(thresh > 0))
