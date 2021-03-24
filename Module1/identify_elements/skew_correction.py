@@ -4,7 +4,7 @@ from Module1.remove_background.extract_largest import element_largest
 from Module1.preprocessing.resize import image_resize
 
 
-def identify_elements(image):
+def correct_skewness(image):
     envelop_obj = element_largest(image)
     angle = cv.minAreaRect(envelop_obj['contour'])[-1]
 

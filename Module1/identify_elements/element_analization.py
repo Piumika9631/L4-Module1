@@ -1,47 +1,74 @@
 import cv2 as cv
 import numpy as np
-from Module1.remove_background.extract_largest import element_largest
 
-def main_method(image):
-    get_elements(image)
 
 def get_elements(image):
-    envelop_obj = element_largest(image)
-    envelop_contour = envelop_obj['contour']
-    mask = np.full(image.shape[:2], 255, np.uint8)
-    cv.drawContours(mask, [envelop_contour], -1, 255, -1)
-    masked_image = cv.bitwise_and(image, image, mask=mask)
+    white_board = np.full(image.shape[:2], 255, np.uint8)
+    all_contours = get_rectangles(image);
 
-    # gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
-    # thresh = cv.threshold(gray, 0, 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU)[1]
-    # thresh_image = cv.adaptiveThreshold(gray, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 11, 2)
-    cv.imshow('Mask', mask)
-    cv.imshow('Masked image', masked_image)
+    for i in all_contours:
+        contour = i
+        area = cv.contourArea(contour)
+        x, y, w, h = cv.boundingRect(contour)
+        area = w * h
+        # assuming 5 is the smallest ratio of a character height and width
+        if area < 5000 and (w / h < 5 and h / w < 5):
+            cv.rectangle(white_board, (x, y), (x + w, y + h), (0, 0, 255), -1)
+    cv.imshow('White board', white_board)
 
+    edges = cv.Canny(white_board, 110, 210)
+    kernel = cv.getStructuringElement(cv.MORPH_RECT, (20, 20))
+    dilate = cv.dilate(edges, kernel, iterations=4)
+    cv.imshow('Dilated', dilate)
 
-    x, y, w, h = cv.boundingRect(envelop_contour)
-
-    # mask = np.zeros_like(envelop_image)  # Create mask where white is what we want, black otherwise
-    # cv.drawContours(mask, envelop_contour, 0, 255, -1)  # Draw filled contour in mask
-    # out = np.zeros_like(envelop_image)  # Extract out the object and place into output image
-    # out[mask == 255] = envelop_image[mask == 255]
-    # (y, x) = np.where(mask == 255)
-    # (topy, topx) = (np.min(y), np.min(x))
-    # (bottomy, bottomx) = (np.max(y), np.max(x))
-    # out = out[topy:bottomy + 1, topx:bottomx + 1]
-
-    # Show the output image
-    # cv.imshow('Output', out)
-
-    # crop_img = thresh[y:y + h, x:x + w]
-    # cv.imshow("cropped", crop_img)
-
-    # gray = cv.cvtColor(crop_img, cv.COLOR_BGR2GRAY)
-    # edges = cv.Canny(crop_img, 110, 210)
-    kernel = cv.getStructuringElement(cv.MORPH_RECT, (7, 7))
-    # dilate = cv.dilate(edges, kernel, iterations=2)
-
-    # cv.imshow('Dilated', dilate)
-    cv.waitKey(0)
+    contours_list = get_objects(dilate)
+    labelled_list = get_label(contours_list)
+    slicing(image, labelled_list)
 
 
+def get_rectangles(image):
+    # Remove noise
+    image_copy = image.copy()
+    gray = cv.cvtColor(image_copy, cv.COLOR_BGR2GRAY)
+    thresh_image = cv.adaptiveThreshold(gray, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 13, 14)
+    edges = cv.Canny(thresh_image, 3, 3)
+    contours, hierarchy = cv.findContours(edges, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+    return contours
+
+
+def get_objects(image):
+    edges = cv.Canny(image, 110, 210)
+    contours, hierarchy = cv.findContours(edges, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+    contours_list = []
+
+    for i in contours:
+        M = cv.contourArea(i)
+        x, y, w, h = cv.boundingRect(i)
+        my_object = {'contour': i, 'area': M, 'dimensions': {'x': x, 'y': y, 'w': w, 'h': h}, 'label': 'none'}
+        contours_list.append(my_object)
+
+    return contours_list
+
+
+def get_label(contours_list):
+    for obj in contours_list:
+        my_area = obj['area']
+        if my_area > 25000:
+            obj['label'] = 'TempAdd'
+        else:
+            obj['label'] = 'Other'
+
+    return contours_list
+
+
+def slicing(image, contours_list):
+    i = 0
+    for obj in contours_list:
+        s = 'address_'
+        if obj['label'] == 'TempAdd':
+            nws = s+str(i)
+            address_contour = obj['contour']
+            x, y, w, h = cv.boundingRect(address_contour)
+            crop_img = image[y:y + h, x:x + w]
+            cv.imshow(nws, crop_img)
+            i = i +1

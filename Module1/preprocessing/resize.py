@@ -2,6 +2,10 @@ import cv2 as cv
 
 
 def image_resize(image, width=None, height=None, inter=cv.INTER_AREA):
+    if image is None:
+        print('Image is empty!')
+        exit()
+
     # initialize the dimensions of the image to be resized and grab the image size
     dimension = None
     (h, w) = image.shape[:2]
