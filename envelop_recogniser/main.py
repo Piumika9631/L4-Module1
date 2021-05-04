@@ -9,7 +9,7 @@ from remove_background.image_manipulations import apply_background_mask
 from remove_background.image_manipulations import resize_image
 from identify_elements.skew_correction import correct_skewness
 
-mode = constants.mode_dir
+mode = constants.mode_file
 
 
 def main_function(selected_input_image):
@@ -39,8 +39,6 @@ def main_function(selected_input_image):
     cv.imshow('rotated', rotated_image)
 
 
-
-
 if mode == constants.mode_file:
     selectedImagePath = constants.image14Path
     selectedImage = read_image(selectedImagePath)
@@ -51,5 +49,3 @@ elif mode == constants.mode_dir:
         selectedImage = read_image(img)
         main_function(selectedImage)
         cv.waitKey(1000)
-
-

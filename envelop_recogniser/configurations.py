@@ -10,5 +10,3 @@ def read_image(selected_image_path):
         exit()
     else:
         return selectedInputImage
-
-
