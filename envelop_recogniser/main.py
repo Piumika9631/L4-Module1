@@ -4,6 +4,7 @@ import cv2 as cv
 
 from envelop_recogniser import constants
 from envelop_recogniser.configurations import read_image
+from envelop_recogniser.identify_elements.element_analyzation import get_elements
 from remove_background.roi_extraction import get_largest_element
 from remove_background.image_manipulations import apply_background_mask
 from remove_background.image_manipulations import resize_image
@@ -24,7 +25,7 @@ def main_function(selected_input_image):
 
     # view resized image
     resized_image = resize_image(selected_input_image, height=700)
-    cv.imshow('resized', resized_image)
+    # cv.imshow('resized', resized_image)
 
     # extract the envelop
     envelop_marked_obj = get_largest_element(resized_image)
@@ -38,14 +39,17 @@ def main_function(selected_input_image):
     rotated_image = correct_skewness(ROI)
     cv.imshow('rotated', rotated_image)
 
+    # analise elements
+    get_elements(rotated_image)
+
 
 if mode == constants.mode_file:
-    selectedImagePath = constants.image14Path
+    selectedImagePath = constants.image11Path
     selectedImage = read_image(selectedImagePath)
     main_function(selectedImage)
     cv.waitKey(0)
 elif mode == constants.mode_dir:
-    for img in glob.glob("../new_data/*.jpg"):
+    for img in glob.glob("../resources/*.jpg"):
         selectedImage = read_image(img)
         main_function(selectedImage)
         cv.waitKey(1000)
