@@ -17,3 +17,5 @@ maskPath = '../resources/mask.jpg'
 
 mode_dir = 'dir'
 mode_file = 'file'
+
+resize_height = 700

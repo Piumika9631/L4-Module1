@@ -6,11 +6,11 @@ from envelop_recogniser import constants
 from envelop_recogniser.configurations import read_image
 from envelop_recogniser.identify_elements.element_analyzation import get_elements
 from remove_background.roi_extraction import get_largest_element
-from remove_background.image_manipulations import apply_background_mask
+from remove_background.image_manipulations import apply_background_mask, background_crop
 from remove_background.image_manipulations import resize_image
 from identify_elements.skew_correction import correct_skewness
 
-mode = constants.mode_file
+mode = constants.mode_dir
 
 
 def main_function(selected_input_image):
@@ -24,32 +24,36 @@ def main_function(selected_input_image):
     # cv.imshow('original', selected_input_image)
 
     # view resized image
-    resized_image = resize_image(selected_input_image, height=700)
+    resized_image = resize_image(selected_input_image, constants.resize_height)
     # cv.imshow('resized', resized_image)
 
     # extract the envelop
     envelop_marked_obj = get_largest_element(resized_image)
-    # cv.imshow('envelop', envelop_marked_obj['envelop'])
+    # cv.imshow('marked area envelop', envelop_marked_obj['envelop'])
 
-    # remove background
+    # remove background using mask
     ROI = apply_background_mask(resized_image, envelop_marked_obj)
-    # cv.imshow('masked', ROI)
+    cv.imshow('masked', ROI)
 
-    # skew correction
+    # correct skewness of image
     rotated_image = correct_skewness(ROI)
-    cv.imshow('rotated', rotated_image)
+    # cv.imshow('rotated', rotated_image)
+
+    # crop unnecessary background
+    cropped = background_crop(rotated_image)
+    cv.imshow('cropped', cropped)
 
     # analise elements
-    get_elements(rotated_image)
+    # get_elements(rotated_image)
 
 
 if mode == constants.mode_file:
-    selectedImagePath = constants.image11Path
+    selectedImagePath = constants.image14Path
     selectedImage = read_image(selectedImagePath)
     main_function(selectedImage)
     cv.waitKey(0)
 elif mode == constants.mode_dir:
-    for img in glob.glob("../resources/*.jpg"):
+    for img in glob.glob("../new_data/*.jpg"):
         selectedImage = read_image(img)
         main_function(selectedImage)
         cv.waitKey(1000)

@@ -1,5 +1,4 @@
 import cv2 as cv
-import imutils
 import numpy as np
 
 show_whiteboard = False
@@ -61,7 +60,7 @@ def get_objects(image, original):
     for i in contours:
         x, y, w, h = cv.boundingRect(i)
         M = w * h
-        print('area '+ str(M))
+        print('area ' + str(M))
         my_object = {'contour': i, 'area': M, 'dimensions': {'x': x, 'y': y, 'w': w, 'h': h}, 'label': 'none'}
         contours_list.append(my_object)
 
@@ -97,5 +96,3 @@ def slicing(image, contours_list):
             i = i + 1
 
         j = j + 1
-
-# if obj['label'] == 'TempAdd':

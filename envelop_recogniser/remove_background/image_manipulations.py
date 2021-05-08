@@ -1,6 +1,8 @@
 import cv2 as cv
 import numpy as np
 
+from envelop_recogniser.remove_background.roi_extraction import get_largest_element
+
 
 def apply_background_mask(image, largest_element):
     image_copy = image.copy()
@@ -9,19 +11,18 @@ def apply_background_mask(image, largest_element):
     # while mask pixels with a value of 255 (foreground) are allowed to be kept
 
     mask = np.zeros(image.shape[:2], np.uint8)
-    c = largest_element['contour']
-    cv.drawContours(mask, [c], -1, 255, -1)
+    largest_contour = largest_element['contour']
+    cv.drawContours(mask, [largest_contour], -1, 255, -1)
     masked_image = cv.bitwise_and(image_copy, image_copy, mask=mask)
     return masked_image
 
 
-def background_crop(image, largest_element):
-    image_copy = image.copy()
+def background_crop(image):
+    largest_element = get_largest_element(image)
     envelop_contour = largest_element['contour']
     x, y, w, h = cv.boundingRect(envelop_contour)
-    crop_img = image_copy[y:y + h, x:x + w]
-    cv.imshow("cropped", crop_img)
-    cv.waitKey(0)
+    crop_img = image[y:y + h, x:x + w]
+    return crop_img
 
 
 def resize_image(image, width=None, height=None, inter=cv.INTER_AREA):
