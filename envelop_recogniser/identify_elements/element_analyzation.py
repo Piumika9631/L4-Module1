@@ -1,7 +1,7 @@
 import cv2 as cv
 import numpy as np
 
-show_whiteboard = False
+show_whiteboard = True
 show_dilated = True
 show_edges = False
 
@@ -50,7 +50,7 @@ def get_objects(image, original):
     edges = cv.Canny(image, 110, 210)
     contours, hierarchy = cv.findContours(edges, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
     cv.drawContours(image_copy, contours, -1, (0, 255, 0), 1)
-    cv.imshow('copy', image_copy)
+    # cv.imshow('copy', image_copy)
     contours_list = []
 
     # if len(contours) == 0:
@@ -92,7 +92,7 @@ def slicing(image, contours_list):
             address_contour = obj['contour']
             x, y, w, h = cv.boundingRect(address_contour)
             crop_img = image[y:y + h, x:x + w]
-            cv.imshow(nws, crop_img)
+            # cv.imshow(nws, crop_img)
             i = i + 1
 
         j = j + 1

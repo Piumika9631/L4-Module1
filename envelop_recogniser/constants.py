@@ -13,9 +13,10 @@ image12Path = '../resources/v12.jpg'
 image13Path = '../resources/v13.jpg'
 image14Path = '../resources/v14.jpg'
 image15Path = '../resources/v15.jpg'
+image16Path = '../resources/v16.jpg'
 maskPath = '../resources/mask.jpg'
 
 mode_dir = 'dir'
 mode_file = 'file'
 
-resize_height = 700
+resize_height = 900

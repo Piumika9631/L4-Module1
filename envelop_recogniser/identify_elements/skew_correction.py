@@ -17,6 +17,12 @@ def correct_skewness(image):
     # rotated = imutils.rotate_bound(image, angle)
     rotated = rotate_bound(image, angle)
 
+    # rotate image assuming envelop has rectangular shape
+    h, w, c = rotated.shape
+
+    if h > w:
+        rotated = rotate_bound(rotated, 90)
+
     # draw the correction angle on the image so we can validate it
     # cv.putText(rotated, "Angle: {:.2f} degrees".format(angle),
     #            (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)

@@ -9,7 +9,7 @@ def get_largest_element(original_image):
     # Blurring to reduce high frequency noise to make our contour detection process more accurate
     blurred = cv.GaussianBlur(gray, (5, 5), 0)
     thresh = cv.threshold(blurred, 60, 255, cv.THRESH_BINARY)[1]
-    contours, hierarchy = cv.findContours(thresh, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_TC89_L1)
+    contours, hierarchy = cv.findContours(thresh, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
     # Not necessary to draw, only for visualizing purpose
     cv.drawContours(image_draw_copy, contours, -1, (0, 255, 0), 1)
     contours_list = []
