@@ -1,8 +1,15 @@
+import statistics
 from typing import TypeVar, NamedTuple, List, Optional, Tuple
-import cv2 as cv
+import cv2
 import numpy as np
 from scipy.spatial import ConvexHull
+
+from envelop_recogniser.constants import threshold_stroke_width_percentage, \
+    threshold_connected_component_position_count, threshold_rectangle_height_width_ratio
 from envelop_recogniser.id_colors import build_colormap
+from envelop_recogniser.identify_elements.skew_correction import rotate_bound
+from envelop_recogniser.utils import generate_selected_rectangles, label_rects, print_label, merge_rectangles_2, \
+    purify_x_rects, purify_y_rects, evaluate_cells
 
 Image = np.ndarray
 GradientImage = np.ndarray
@@ -50,7 +57,7 @@ def get_edges(im: Image, lo: float = 175, hi: float = 220, window: int = 3) -> I
     # Detects edges in the image by applying a Canny edge detector.
     # OpenCV's Canny detector requires 8-bit inputs.
     im = (im * 255.).astype(np.uint8)
-    edges = cv.Canny(im, lo, hi, apertureSize=window)
+    edges = cv2.Canny(im, lo, hi, apertureSize=window)
     # Note that the output is either 255 for edges or 0 for other pixels.
     # Conversion to float wastes space, but makes the return value consistent
     # with the other methods.
@@ -61,8 +68,8 @@ def get_gradients(im: Image) -> Gradients:
     # Obtains the image gradients by means of a 3x3 Scharr filter.
     # In 3x3, Scharr is a more correct choice than Sobel. For higher
     # dimensions, Sobel should be used.
-    grad_x = cv.Scharr(im, cv.CV_64F, 1, 0)
-    grad_y = cv.Scharr(im, cv.CV_64F, 0, 1)
+    grad_x = cv2.Scharr(im, cv2.CV_64F, 1, 0)
+    grad_y = cv2.Scharr(im, cv2.CV_64F, 0, 1)
     return Gradients(x=grad_x, y=grad_y)
 
 
@@ -92,6 +99,8 @@ def apply_swt(im: Image, edges: Image, gradients: Gradients, dark_on_bright: boo
 
     # We keep track of all the rays found in the image.
     rays = []
+    rays_temp = []
+    rays_map = []
 
     # Find a pixel that lies on an edge.
     height, width = im.shape[0:2]
@@ -100,20 +109,41 @@ def apply_swt(im: Image, edges: Image, gradients: Gradients, dark_on_bright: boo
             # Edges are either 0. or 1.
             if edges[y, x] < .5:
                 continue
-            ray = swt_process_pixel(Position(x=x, y=y), edges, directions, out=swt, dark_on_bright=dark_on_bright)
-            if ray:
-                rays.append(ray)
+            # Calculate SWT
+            ray, stroke_width = swt_process_pixel(Position(x=x, y=y), edges, directions, out=swt,
+                                                  dark_on_bright=dark_on_bright)
 
-    # Multiple rays may cross the same pixel and each pixel has the smallest
-    # stroke width of those.
-    # A problem are corners like the edge of an L. Here, two rays will be found,
-    # both of which are significantly longer than the actual width of each
-    # individual stroke. To mitigate, we will visit each pixel on each ray and
-    # take the median stroke length over all pixels on the ray.
-    for ray in rays:
-        median = np.median([swt[p.y, p.x] for p in ray])
+            if ray:
+                rays_map.append({'ray': ray, 'stroke_width': stroke_width, 'width': str(int(stroke_width))})
+                rays_temp.append(ray)
+
+    total_rays_count = len(rays_map)
+    ray_count_map = {}
+    ray_percent_count_map = {}
+    for rayData in rays_map:
+        if rayData['width'] in ray_count_map:
+            ray_count_map[rayData['width']] += 1
+        else:
+            ray_count_map[rayData['width']] = 1
+
+    for key in ray_count_map:
+        value = ray_count_map[key]
+        percentage = value / total_rays_count * 100
+        ray_percent_count_map[key] = int(percentage)
+        # remove outliers like strokes over stamps/labels
+        if int(percentage) > threshold_stroke_width_percentage:
+            for rayData in rays_map:
+                if rayData['width'] == key:
+                    ray = rayData['ray']
+                    o = {'ray': ray, 'stroke_width': rayData['stroke_width']}
+                    rays.append(o)
+
+    # Plot rays into an image
+    for rayObject in rays:
+        ray = rayObject['ray']
+        stroke_width_a = rayObject['stroke_width']
         for p in ray:
-            swt[p.y, p.x] = min(median, swt[p.y, p.x])
+            swt[p.y, p.x] = min(stroke_width_a, swt[p.y, p.x])
 
     swt[swt == np.Infinity] = 0
     return swt
@@ -167,7 +197,7 @@ def swt_process_pixel(pos: Position, edges: Image, directions: Gradients, out: I
         # If we reach the edge of the image without crossing a stroke edge,
         # we discard the result.
         if not ((0 <= cur_x < width) and (0 <= cur_y < height)):
-            return None
+            return None, 0.0
         # The point is either on the line or the end of it, so we register it.
         ray.append(cur_pos)
         # If that pixel is not an edge, we are still on the line and
@@ -185,12 +215,11 @@ def swt_process_pixel(pos: Position, edges: Image, directions: Gradients, out: I
         cur_dir_y = directions.y[cur_y, cur_x]
         dot_product = dir_x * cur_dir_x + dir_y * cur_dir_y
         if dot_product >= -0.866:
-            return None
+            return None, 0.0
         # Paint each of the pixels on the ray with their determined stroke width
         stroke_width = np.sqrt((cur_x - pos.x) * (cur_x - pos.x) + (cur_y - pos.y) * (cur_y - pos.y))
-        for p in ray:
-            out[p.y, p.x] = min(stroke_width, out[p.y, p.x])
-        return ray
+
+        return ray, stroke_width
 
     # noinspection PyUnreachableCode
     assert False, 'This code cannot be reached.'
@@ -243,7 +272,7 @@ def connected_components(swt: Image, threshold: float = 3.) -> Tuple[Image, List
                              Stroke(x=npos.x, y=npos.y + 1, width=n_stroke_width),
                              Stroke(x=npos.x + 1, y=npos.y + 1, width=n_stroke_width)}
                 neighbor_labels.extend(neighbors)
-            if len(component) > 0:
+            if len(component) > threshold_connected_component_position_count:
                 components.append(component)
     return labels, components
 
@@ -290,82 +319,365 @@ def discard_non_text(swt: Image, labels: Image, components: List[Component]) -> 
 
 
 def remove_lines(image):
-    gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
-    thresh_r = cv.threshold(gray, 0, 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU)[1]
-    edges = cv.Canny(thresh_r, 50, 200)
-    lines = cv.HoughLinesP(edges, rho=1, theta=1 * np.pi / 180,
-                           threshold=10, minLineLength=20, maxLineGap=3)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    thresh_r = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+    edges = cv2.Canny(thresh_r, 50, 200)
+    lines = cv2.HoughLinesP(edges, rho=1, theta=1 * np.pi / 180,
+                            threshold=10, minLineLength=20, maxLineGap=3)
     # Draw lines on the image
     for line in lines:
         x1, y1, x2, y2 = line[0]
-        cv.line(image, (x1, y1), (x2, y2), (0, 0, 255), 1)
+        cv2.line(image, (x1, y1), (x2, y2), (0, 0, 255), 1)
 
-    cv.imshow('result', image)
+    cv2.imshow('result', image)
+
+
+def merge_rectangles(rects) -> {'x1': int, 'y1': int, 'x2': int, 'y2': int, 'end_point': (int, int),
+                                'start_point': (int, int), 'length': int}:
+    x_max = 0
+    x_min = 100000
+    y_max = 0
+    y_min = 100000
+    for position in rects:
+        x1 = position[0]
+        y1 = position[1]
+        if x_max < x1:
+            x_max = x1
+        if x_min > x1:
+            x_min = x1
+        if y_max < y1:
+            y_max = y1
+        if y_min > y1:
+            y_min = y1
+
+    length = int(np.sqrt((x_min - x_max) ** 2 + (y_min - y_max) ** 2))
+    return {'x1': x_min, 'y1': y_min, 'x2': x_max, 'y2': y_max, 'end_point': (x_max, y_max),
+            'area': (x_max - x_min) * (y_max - y_min),
+            'start_point': (x_min, y_min), 'length': length}
 
 
 def swt_main(image):
-    gray = open_grayscale(image)
-    # gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
+    cropped_envelop_image = image
+    gray_cropped_envelop = open_grayscale(image)
+
     # Find the edges in the image and the gradients.
-    edges = get_edges(gray)
+    edges = get_edges(gray_cropped_envelop)
     # Find image gradients
-    gradients = get_gradients(gray)
+    gradients = get_gradients(gray_cropped_envelop)
 
-    # Apply the Stroke Width Transformation.
-    swt = apply_swt(gray, edges, gradients)
+    # Apply the Stroke Width Transformation and get character identified image.
+    swt = apply_swt(gray_cropped_envelop, edges, gradients)
 
-    # Apply Connected Components labelling
+    # Apply Connected Components labelling to get words
     labels, components = connected_components(swt)
+    white_board = np.full(cropped_envelop_image.shape[:3], (255, 255, 255), np.uint8)
 
-    # Discard components that are likely not text
-    # TODO: labels, components = discard_non_text(swt, labels, components)
+    component_rects = []
+    for comp in components:
+        rect = merge_rectangles(comp)
+        component_rects.append(rect)
+        white_board = cv2.rectangle(white_board, rect['start_point'], rect['end_point'], (0, 0, 0), -1)
 
     labels = labels.astype(np.float32) / labels.max()
     l = (labels * 255.).astype(np.uint8)
 
-    l = cv.cvtColor(l, cv.COLOR_GRAY2RGB)
-    l = cv.LUT(l, build_colormap())
-    cv.imshow('components', l)
+    l = cv2.cvtColor(l, cv2.COLOR_GRAY2RGB)
+    l = cv2.LUT(l, build_colormap())
+    # cv.imshow('components', l)
 
     swt = (255 * swt / swt.max()).astype(np.uint8)
-    cv.imshow('swt', swt)
+    # cv.imshow('swt', swt)
 
-    # START HERE
-    result_r = l.copy()
+    # Analyse the rectangles (identified word blobs) of result image
+    result_image = white_board.copy()
     kernel = np.ones((9, 9), np.uint8)
-    opening = cv.morphologyEx(result_r, cv.MORPH_OPEN, kernel)
-    closing = cv.morphologyEx(opening, cv.MORPH_CLOSE, kernel)
-    # Convert the image to gray scale
-    gray_r = cv.cvtColor(closing, cv.COLOR_BGR2GRAY)
+    opening = cv2.morphologyEx(result_image, cv2.MORPH_OPEN, kernel)
+    closing = cv2.morphologyEx(opening, cv2.MORPH_CLOSE, kernel)
+
+    gray_r = cv2.cvtColor(closing, cv2.COLOR_BGR2GRAY)
 
     # Performing OTSU threshold
-    ret, thresh1 = cv.threshold(gray_r, 0, 255, cv.THRESH_OTSU | cv.THRESH_BINARY_INV)
-    rect_kernel = cv.getStructuringElement(cv.MORPH_RECT, (3, 3))
+    ret, thresh1 = cv2.threshold(gray_r, 0, 255, cv2.THRESH_OTSU | cv2.THRESH_BINARY_INV)
+    dilate_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
 
-    # Appplying dilation on the threshold image
-    dilation = cv.dilate(thresh1, rect_kernel, iterations=1)
+    # Applying dilation on the threshold image
+    dilation = cv2.dilate(thresh1, dilate_kernel, iterations=1)
+    contours, hierarchy = cv2.findContours(dilation, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    cv.imshow("gray_r", gray_r)
-    cv.imshow("dilation", dilation)
-
-    # Finding contours
-    contours, hierarchy = cv.findContours(dilation, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_NONE)
-    result_r2 = l.copy()
-
-    white_board = np.full(result_r2.shape[:2], 255, np.uint8)
-
-    # Looping through the identified contours
+    horizontal_rectangles = []
+    selected_rectangles = []
+    vertical_rectangles = []
+    rect_heights = []
+    rect_widths = []
+    rotation_angle = -1  # default value
     for cnt in contours:
-        x, y, w, h = cv.boundingRect(cnt)
-        area = w * h
+        x1, y1, w, h = cv2.boundingRect(cnt)
+        rect = {'x1': x1, 'y1': y1, 'x2': x1 + w, 'y2': y1 + h, 'end_point': (x1 + w, y1 + h),
+                'start_point': (x1, y1), 'w': w, 'h': h, 'length': -1, 'area': w * h, 'distance_bottom_next': None,
+                'distance_right_next': None, 'label': -1, 'label_2': -1, 'label_3': -1, 'label_4': -1,
+                'not_consumed': True}
+        rect_heights.append(h)
+        rect_widths.append(w)
+        selected_rectangles.append(rect)
+        cv2.rectangle(white_board, (x1, y1), (x1 + w, y1 + h), (0, 255, 0), -1)
+        if w / h > threshold_rectangle_height_width_ratio:
+            horizontal_rectangles.append(rect)
 
-        if (area > 100 and area < 1000):
-            # Drawing a rectangle on copied image
-            rect = cv.rectangle(white_board, (x, y), (x + w, y + h), (0, 0, 255), -1)
-        # rect = cv.rectangle(result_r2, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        if h / w > threshold_rectangle_height_width_ratio:
+            vertical_rectangles.append(rect)
 
-    cv.imshow("sdsdf", white_board)
-    # hsv = cv2.cvtColor(white_board, cv2.COLOR_BGR2HSV)
+    # calculate rotation angle
+    if len(horizontal_rectangles) < len(vertical_rectangles):
+        rotation_angle = 90
+    elif len(horizontal_rectangles) > len(vertical_rectangles):
+        rotation_angle = 0
+    else:
+        # h > w : calculate the angle using width and height
+        if white_board.shape[0] > white_board.shape[1]:
+            rotation_angle = 90
+        else:
+            rotation_angle = 0
 
-    # hist = cv.calcHist([white_board], [0, 1], None, [180, 256], [0, 180, 0, 256])
-    # cv.imshow("hist", hist)
+    print("rotation_angle: " + str(rotation_angle))
+    cropped_image = cropped_envelop_image.copy()
+
+    if rotation_angle == 90:
+        dilation = rotate_bound(dilation, rotation_angle)
+        white_board = rotate_bound(white_board, rotation_angle)
+        cropped_image = rotate_bound(cropped_envelop_image, rotation_angle)
+        # need to get rects again
+        selected_rectangles, rect_heights, rect_widths = generate_selected_rectangles(dilation)
+
+    height_r = white_board.shape[0]
+    width_r = white_board.shape[1]
+
+    # start vertical divide image
+    width_cutoff = int(width_r / 3)
+    height_cutoff = int(height_r / 3)
+
+    median_rect_h = statistics.median(rect_heights)
+    median_rect_w = statistics.median(rect_widths)
+    mean_rect_h = statistics.mean(rect_heights)  # average line height
+    mean_rect_w = statistics.mean(rect_widths)  # average word width
+
+    print('median_rect_h %.2f, mean_rect_h %.2f' % (median_rect_h, mean_rect_h))
+    print('median_rect_w %.2f, mean_rect_w %.2f' % (median_rect_w, mean_rect_w))
+
+    # Line spacing is the space between each line in a paragraph.
+    # Word allows you to customize the line spacing to be single spaced (one line high),
+    # double spaced (two lines high), or any other amount you want.
+    # The default spacing in Word is 1.08 lines, which is slightly larger than single spaced.
+    additional_spacing_h_factor = mean_rect_h
+    additional_spacing_w_factor = mean_rect_h * 1.5
+
+    half_width_cutoff = additional_spacing_w_factor
+    half_height_cutoff = additional_spacing_h_factor
+    diagonal_cutoff = np.sqrt(half_height_cutoff ** 2 + half_width_cutoff ** 2)
+
+    selected_rectangles.sort(key=lambda rec: rec['x1'])
+
+    current_index = 0
+    rect_count = len(selected_rectangles)
+    labeled_rects = label_rects(selected_rectangles, half_width_cutoff * 1.0, half_height_cutoff)
+
+    cluster_dict = dict()
+    for r in labeled_rects:
+        label = r['label']
+        print_label(white_board, r, str(r['label']), (0, 0, 200))
+        if label in cluster_dict:
+            temp = cluster_dict[label]
+            temp.append(r)
+            cluster_dict[label] = temp
+        else:
+            cluster_dict[label] = [r]
+
+    cluster_as_rects = []
+    for cluster_name in cluster_dict:
+        cluster = cluster_dict[cluster_name]
+        rect = merge_rectangles_2(cluster)
+        cluster_as_rects.append(rect)
+
+    labeled_rects = label_rects(cluster_as_rects, half_width_cutoff * 1.0, half_height_cutoff, 'label_2')
+
+    cluster_dict = dict()
+    for r in labeled_rects:
+        label = r['label_2']
+        print_label(white_board, r, str(r['label_2']), (255, 0, 200))
+        if label in cluster_dict:
+            temp = cluster_dict[label]
+            temp.append(r)
+            cluster_dict[label] = temp
+        else:
+            cluster_dict[label] = [r]
+
+    cluster_as_rects = []
+    for cluster_name in cluster_dict:
+        cluster = cluster_dict[cluster_name]
+        rect = merge_rectangles_2(cluster)
+        cluster_as_rects.append(rect)
+
+    labeled_rects = label_rects(cluster_as_rects, half_width_cutoff * 1.0, half_height_cutoff, 'label_3')
+
+    cluster_dict = dict()
+    for r in labeled_rects:
+        label = r['label_3']
+        print_label(cropped_image, r, str(r['label_3']), (200, 0, 0))
+        if label in cluster_dict:
+            temp = cluster_dict[label]
+            temp.append(r)
+            cluster_dict[label] = temp
+        else:
+            cluster_dict[label] = [r]
+
+    cluster_as_rects = []
+    for cluster_name in cluster_dict:
+        cluster = cluster_dict[cluster_name]
+        rect = merge_rectangles_2(cluster)
+        cluster_as_rects.append(rect)
+        white_board = cv2.rectangle(white_board, rect['start_point'], rect['end_point'], (255, 0, 255), 1)
+        cropped_image = cv2.rectangle(cropped_image, rect['start_point'], rect['end_point'], (255, 0, 255), 1)
+
+    # cv2.imshow("temp", cropped_image)
+    # print(resultr)
+    cluster_as_rects_2 = []
+    # for large_rect in cluster_as_rects:
+    #     rect = merge_rectangles(large_rect)
+    #     cluster_as_rects_2.append(rect)
+    #     white_board = cv2.rectangle(white_board, rect['start_point'], rect['end_point'], (255, 0, 255), 1)
+
+    # for selected_rect in selected_rectangles:
+    #     print(selected_rect)
+    #     if current_index + 1 == rect_count:
+    #         break
+    #     next_rect = selected_rectangles[current_index + 1]
+    #     selected_rect['distance_right_next'] = abs(next_rect['x1'] - selected_rect['x2'])
+    #     current_index = current_index + 1
+    #
+    # selected_rectangles.sort(key=lambda r: r['y1'])
+    # current_index = 0
+    # for selected_rect in selected_rectangles:
+    #     print(selected_rect)
+    #     if current_index + 1 == rect_count:
+    #         break
+    #     next_rect = selected_rectangles[current_index + 1]
+    #     selected_rect['distance_bottom_next'] = abs(next_rect['y1'] - selected_rect['y2'])
+    #     current_index = current_index + 1
+
+    # selected_rectangles = cluster_as_rects
+    x_purified_rects = []
+
+    for selected_rect in selected_rectangles:
+        new_rects = purify_x_rects(selected_rect, width_r, width_cutoff)
+        x_purified_rects.extend(new_rects)
+
+    purified_rects = []
+    for x_rect in x_purified_rects:
+        new_rects = purify_y_rects(x_rect, height_r, height_cutoff)
+        purified_rects.extend(new_rects)
+
+    c_1_limit = width_cutoff
+    c_2_limit = width_cutoff + width_cutoff
+    c_3_limit = width_cutoff + width_cutoff + width_cutoff
+
+    r_1_limit = height_cutoff
+    r_2_limit = height_cutoff + height_cutoff
+    r_3_limit = height_cutoff + height_cutoff + height_cutoff
+
+    cell_1_1 = []  # top left
+    cell_1_2 = []  # top middle
+    cell_1_3 = []  # top right
+
+    cell_2_1 = []  # middle left
+    cell_2_2 = []  # middle middle
+    cell_2_3 = []  # middle right
+
+    cell_3_1 = []  # bottom left
+    cell_3_2 = []  # bottom middle
+    cell_3_3 = []  # bottom right
+
+    # all_rect_cords = []
+    # total_rect_area = 0
+
+    for selected_rect in purified_rects:
+        # for selected_rect in selected_rectangles:
+        x1 = selected_rect['x1']
+        y1 = selected_rect['y1']
+        x2 = selected_rect['x2']
+        y2 = selected_rect['y2']
+        # all_rect_cords.append([x1, y1, x2, y2])
+        selected_rect['ne_distance'] = -1
+        selected_rect['se_distance'] = -1
+        selected_rect['sw_distance'] = -1
+        selected_rect['nw_distance'] = -1
+        # rect_heights.append(abs(x1 - x2))
+        # rect_widths.append(abs(y1 - y2))
+        # total_rect_area += selected_rect['area']
+        cv2.rectangle(white_board, (x1, y1), selected_rect['end_point'], (0, 0, 255), 2)
+        if 0 <= x1 < c_1_limit and 0 <= y1 < r_1_limit:
+            cell_1_1.append(selected_rect)
+        elif c_1_limit <= x1 < c_2_limit and 0 <= y1 < r_1_limit:
+            cell_1_2.append(selected_rect)
+        elif c_2_limit <= x1 and 0 <= y1 < r_1_limit:
+            cell_1_3.append(selected_rect)
+        elif 0 <= x1 < c_1_limit and r_1_limit <= y1 < r_2_limit:
+            cell_2_1.append(selected_rect)
+        elif c_1_limit <= x1 < c_2_limit and r_1_limit <= y1 < r_2_limit:
+            cell_2_2.append(selected_rect)
+        elif c_2_limit <= x1 and r_1_limit <= y1 < r_2_limit:
+            cell_2_3.append(selected_rect)
+        elif 0 <= x1 < c_1_limit and r_2_limit <= y1:
+            cell_3_1.append(selected_rect)
+        elif c_1_limit <= x1 < c_2_limit and r_2_limit <= y1:
+            cell_3_2.append(selected_rect)
+        elif c_2_limit <= x1 and r_2_limit <= y1:
+            cell_3_3.append(selected_rect)
+
+    cell_1_1_with_extra = {'name': 'A', 'rects': cell_1_1, 'start_point': (0, 0), 'end_point': (c_1_limit, r_1_limit)}
+    cell_1_2_with_extra = {'name': 'B', 'rects': cell_1_2, 'start_point': (c_1_limit, 0),
+                           'end_point': (c_2_limit, r_1_limit)}
+    cell_1_3_with_extra = {'name': 'C', 'rects': cell_1_3, 'start_point': (c_2_limit, 0),
+                           'end_point': (c_3_limit, r_1_limit)}
+    cell_2_1_with_extra = {'name': 'D', 'rects': cell_2_1, 'start_point': (0, r_1_limit),
+                           'end_point': (c_1_limit, r_2_limit)}
+    cell_2_2_with_extra = {'name': 'E', 'rects': cell_2_2, 'start_point': (c_1_limit, r_1_limit),
+                           'end_point': (c_2_limit, r_2_limit)}
+    cell_2_3_with_extra = {'name': 'F', 'rects': cell_2_3, 'start_point': (c_2_limit, r_1_limit),
+                           'end_point': (c_3_limit, r_2_limit)}
+    cell_3_1_with_extra = {'name': 'G', 'rects': cell_3_1, 'start_point': (0, r_2_limit),
+                           'end_point': (c_1_limit, r_3_limit)}
+    cell_3_2_with_extra = {'name': 'H', 'rects': cell_3_2, 'start_point': (c_1_limit, r_2_limit),
+                           'end_point': (c_2_limit, r_3_limit)}
+    cell_3_3_with_extra = {'name': 'I', 'rects': cell_3_3, 'start_point': (c_2_limit, r_2_limit),
+                           'end_point': (c_3_limit, r_3_limit)}
+
+    cells = [cell_1_1_with_extra, cell_1_2_with_extra, cell_1_3_with_extra,
+             cell_2_1_with_extra, cell_2_2_with_extra, cell_2_3_with_extra,
+             cell_3_1_with_extra, cell_3_2_with_extra, cell_3_3_with_extra]
+
+    address_probability_array = evaluate_cells(cells)
+
+    for cell_ex in cells:
+        start_point_rr = cell_ex['start_point']
+        end_point_rr = cell_ex['end_point']
+        cropped_image = cv2.rectangle(cropped_image, start_point_rr, end_point_rr, (0, 100, 0), 1)
+        # white_board_manual = cv2.rectangle(white_board_manual, start_point_rr, end_point_rr, (25, 0, 255), 1)
+        white_board = cv2.rectangle(white_board, start_point_rr, end_point_rr, (25, 0, 255), 1)
+
+    color_var = 25
+    r_c = 255
+    g_c = 0
+    b_c = 255
+    for data in address_probability_array:
+        r_c -= color_var
+        g_c += color_var
+        color = (b_c, g_c, r_c)
+        print_label(white_board, data['val'], data['p_string'],
+                    color)
+
+    vis = np.concatenate((white_board, cropped_image), axis=0)
+
+    # cv2.imshow('white board', white_board)
+    # cv2.imshow('cropped image', cropped_image)
+    # cv2.imshow('vis', vis)
+
+    return white_board, cropped_image, vis

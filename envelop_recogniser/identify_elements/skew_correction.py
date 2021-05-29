@@ -1,11 +1,12 @@
-import cv2 as cv
+import cv2
 import numpy as np
 from envelop_recogniser.remove_background.roi_extraction import get_largest_element
 
 
 def correct_skewness(image):
     envelop_obj = get_largest_element(image)
-    angle = cv.minAreaRect(envelop_obj['contour'])[-1]
+    angle = cv2.minAreaRect(envelop_obj['contour'])[-1]
+    angle_print = angle
 
     if angle < -45:
         angle = -(90 + angle)
@@ -17,17 +18,11 @@ def correct_skewness(image):
     # rotated = imutils.rotate_bound(image, angle)
     rotated = rotate_bound(image, angle)
 
-    # rotate image assuming envelop has rectangular shape
-    h, w, c = rotated.shape
-
-    if h > w:
-        rotated = rotate_bound(rotated, 90)
-
     # draw the correction angle on the image so we can validate it
-    # cv.putText(rotated, "Angle: {:.2f} degrees".format(angle),
+    # cv2.putText(rotated, "Angle: {:.2f} degrees".format(angle_print),
     #            (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
     # show the output image
-    # print("[INFO] angle: {:.3f}".format(angle))
+    # print("[INFO] angle: {:.3f}".format(angle_print))
 
     return rotated
 
@@ -41,7 +36,7 @@ def rotate_bound(image, angle):
     # grab the rotation matrix (applying the negative of the
     # angle to rotate clockwise), then grab the sine and cosine
     # (i.e., the rotation components of the matrix)
-    M = cv.getRotationMatrix2D((cX, cY), -angle, 1.0)
+    M = cv2.getRotationMatrix2D((cX, cY), -angle, 1.0)
     cos = np.abs(M[0, 0])
     sin = np.abs(M[0, 1])
 
@@ -55,4 +50,4 @@ def rotate_bound(image, angle):
 
     # perform the actual rotation and return the image
     # Added flag to reduce the blur effect
-    return cv.warpAffine(image, M, (nW, nH), flags=cv.INTER_CUBIC)
+    return cv2.warpAffine(image, M, (nW, nH), flags=cv2.INTER_CUBIC)
