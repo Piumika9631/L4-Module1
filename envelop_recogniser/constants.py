@@ -15,6 +15,7 @@ image14Path = '../resources/v14.jpg'
 image15Path = '../resources/v15.jpg'
 image16Path = '../resources/v16.jpg'
 image17Path = '../resources/v17.jpg'
+image18Path = '../resources/v18.jpg'
 maskPath = '../resources/mask.jpg'
 
 mode_dir = 'dir'

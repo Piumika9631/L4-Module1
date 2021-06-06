@@ -1,6 +1,6 @@
 import os
 
-import cv2 as cv2
+import cv2
 
 from envelop_recogniser.constants import threshold_stroke_width_percentage, \
     threshold_connected_component_position_count, threshold_line_height_to_word_gap_ratio_for_handwritten_letters, \
@@ -22,6 +22,168 @@ def save_output(image_name, image, prefix='ci'):
     filename = folder_name + "/" + prefix + "_" + image_name
     if not cv2.imwrite(filename, image):
         raise Exception("Could not write image")
+
+
+def get_projected_rect(address_rect, scale_factor):
+    x = int((address_rect['x1'] - 20) * scale_factor)
+    y = int((address_rect['y1'] - 20) * scale_factor)
+    w = int((address_rect['w'] + 40) * scale_factor)
+    h = int((address_rect['h'] + 40) * scale_factor)
+    return x, y, w, h
+
+
+def get_scale_factors(cropped_image, rotated_original):
+    height, width = cropped_image.shape[:2]
+    org_height, org_width = rotated_original.shape[:2]
+    scale_factor = org_width / width
+    return scale_factor
+
+
+def get_from_address_cells(to_address_labels):
+    tal = to_address_labels
+    if 'H' in tal or 'I' in tal or 'F' in tal:
+        return ['D', 'H', 'G']
+    if 'A' in tal or 'B' in tal or 'D' in tal:
+        return ['F', 'B', 'C']
+
+
+def label_address(address_rect):
+    a_cell_names = address_rect['cells']
+    from_address = address_rect['from_address']
+    to_address = address_rect['to_address']
+    flip_envelop = address_rect['flip_envelop']
+
+    if 'A' in a_cell_names:
+        flip_envelop += 1
+        to_address += 1
+    if 'B' in a_cell_names:
+        if 'A' in a_cell_names:
+            flip_envelop += 1
+            to_address += 1
+        elif 'C' in a_cell_names:
+            flip_envelop += 1
+            from_address += 1
+        elif 'E' in a_cell_names:
+            to_address += 0.5
+            from_address += 0.5
+        else:
+            to_address += 0.5
+            from_address += 0.5
+    if 'C' in a_cell_names:
+        flip_envelop += 1
+        from_address += 1
+    if 'D' in a_cell_names:
+        if 'A' in a_cell_names:
+            flip_envelop += 1
+            to_address += 1
+        if 'G' in a_cell_names:
+            flip_envelop -= 1
+            from_address += 1
+        else:
+            to_address += 0.5
+            from_address += 0.5
+    if 'E' in a_cell_names:
+        to_address += 0.5
+        from_address += 0.5
+    if 'G' in a_cell_names:
+        flip_envelop -= 1
+        from_address += 1
+    if 'H' in a_cell_names:
+        if 'G' in a_cell_names:
+            flip_envelop -= 1
+            from_address += 1
+        elif 'I' in a_cell_names:
+            to_address += 1
+            flip_envelop -= 1
+        else:
+            to_address += 0.5
+            from_address += 0.5
+    if 'F' in a_cell_names:
+        if 'C' in a_cell_names:
+            flip_envelop += 1
+            from_address += 1
+        elif 'I' in a_cell_names:
+            to_address += 1
+            flip_envelop -= 1
+        else:
+            to_address += 0.5
+            from_address += 0.5
+    if 'I' in a_cell_names:
+        to_address += 1
+        flip_envelop -= 1
+    address_rect['from_address'] = from_address
+    address_rect['to_address'] = to_address
+    address_rect['flip_envelop'] = flip_envelop
+    return address_rect
+
+
+def evaluate_probability(probability_array):
+    address_candidates = []
+    for data in probability_array:
+        if data['probability'] > 0.019:
+            address_candidates.append(data)
+    return address_candidates
+    # for candidate in address_candidates:
+
+
+def identify_cells(selected_rect: RECT, width_cutoff: int, height_cutoff: int):
+    column_1 = ['A', 'D', 'G']
+    column_2 = ['B', 'E', 'H']
+    column_3 = ['C', 'F', 'I']
+    row_1 = ['A', 'B', 'C']
+    row_2 = ['D', 'E', 'F']
+    row_3 = ['G', 'H', 'I']
+    x1 = selected_rect['x1']
+    x2 = selected_rect['x2']
+    y1 = selected_rect['y1']
+    y2 = selected_rect['y2']
+    belongs_to = []
+    if x1 < width_cutoff or x2 < width_cutoff:
+        belongs_to.append('C1')
+    if width_cutoff <= x1 < width_cutoff * 2 or width_cutoff <= x2 < width_cutoff * 2:
+        belongs_to.append('C2')
+    if width_cutoff * 2 <= x1 or width_cutoff * 2 <= x2:
+        if "C1" in belongs_to: belongs_to.append('C2')
+        belongs_to.append('C3')
+
+    if y1 < height_cutoff or y2 < height_cutoff:
+        belongs_to.append('R1')
+    if height_cutoff <= y1 < height_cutoff * 2 or height_cutoff <= y2 < height_cutoff * 2:
+        belongs_to.append('R2')
+    if height_cutoff * 2 <= y1 or height_cutoff * 2 <= y2:
+        belongs_to.append('R3')
+        if "R1" in belongs_to: belongs_to.append('R2')
+
+    cells = []
+    if 'C1' in belongs_to and 'R1' in belongs_to:
+        cells.append('A')
+
+    if 'C1' in belongs_to and 'R2' in belongs_to:
+        cells.append('D')
+
+    if 'C1' in belongs_to and 'R3' in belongs_to:
+        cells.append('G')
+
+    if 'C2' in belongs_to and 'R1' in belongs_to:
+        cells.append('B')
+
+    if 'C2' in belongs_to and 'R2' in belongs_to:
+        cells.append('E')
+
+    if 'C2' in belongs_to and 'R3' in belongs_to:
+        cells.append('H')
+
+    if 'C3' in belongs_to and 'R1' in belongs_to:
+        cells.append('C')
+
+    if 'C3' in belongs_to and 'R2' in belongs_to:
+        cells.append('F')
+
+    if 'C3' in belongs_to and 'R3' in belongs_to:
+        cells.append('I')
+
+    selected_rect['cells'] = cells
+    return selected_rect
 
 
 def generate_selected_rectangles(dilation) -> [[], [], []]:

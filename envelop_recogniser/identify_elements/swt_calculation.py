@@ -1,6 +1,8 @@
 import statistics
 from typing import TypeVar, NamedTuple, List, Optional, Tuple
 import cv2
+import random
+import string
 import numpy as np
 from scipy.spatial import ConvexHull
 
@@ -9,7 +11,8 @@ from envelop_recogniser.constants import threshold_stroke_width_percentage, \
 from envelop_recogniser.id_colors import build_colormap
 from envelop_recogniser.identify_elements.skew_correction import rotate_bound
 from envelop_recogniser.utils import generate_selected_rectangles, label_rects, print_label, merge_rectangles_2, \
-    purify_x_rects, purify_y_rects, evaluate_cells
+    purify_x_rects, purify_y_rects, evaluate_cells, evaluate_probability, label_address, get_from_address_cells, \
+    get_scale_factors, get_projected_rect, save_output, identify_cells
 
 Image = np.ndarray
 GradientImage = np.ndarray
@@ -356,7 +359,7 @@ def merge_rectangles(rects) -> {'x1': int, 'y1': int, 'x2': int, 'y2': int, 'end
             'start_point': (x_min, y_min), 'length': length}
 
 
-def swt_main(image):
+def swt_main(image, original_cropped_image):
     cropped_envelop_image = image
     gray_cropped_envelop = open_grayscale(image)
 
@@ -533,7 +536,13 @@ def swt_main(image):
     for cluster_name in cluster_dict:
         cluster = cluster_dict[cluster_name]
         rect = merge_rectangles_2(cluster)
-        cluster_as_rects.append(rect)
+        rect1 = identify_cells(rect, width_cutoff, height_cutoff)
+        cluster_as_rects.append(rect1)
+        lbl = ""
+        for cn in rect1['cells']:
+            lbl += (" " + cn)
+        cv2.putText(cropped_image, lbl, rect1['start_point'], cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5, (230, 50, 100), 2)
         white_board = cv2.rectangle(white_board, rect['start_point'], rect['end_point'], (255, 0, 255), 1)
         cropped_image = cv2.rectangle(cropped_image, rect['start_point'], rect['end_point'], (255, 0, 255), 1)
 
@@ -655,6 +664,93 @@ def swt_main(image):
              cell_3_1_with_extra, cell_3_2_with_extra, cell_3_3_with_extra]
 
     address_probability_array = evaluate_cells(cells)
+    address_candidate_cells = evaluate_probability(address_probability_array)
+    address_candidate_cells.sort(key=lambda d: d['probability'], reverse=True)
+
+    address_cells = []
+    address_rects = []
+    j = 0
+    temp_lbl = []
+    for cluster_rect in cluster_as_rects:
+        cluster_rect['to_address'] = 0
+        cluster_rect['from_address'] = 0
+        cluster_rect['flip_envelop'] = 0
+        cluster_rect['printed'] = False
+        cluster_rect['unique_name'] = ''.join(random.choice(string.ascii_lowercase) for i in range(8))
+
+        for p_data in address_candidate_cells:
+            cell_name = p_data['val']['name']
+
+            if cell_name in cluster_rect['cells']:
+                address_cells.extend(cluster_rect['cells'])
+                a_r = label_address(cluster_rect)
+
+                if a_r['unique_name'] not in temp_lbl:
+                    a_r['to_address'] = a_r['to_address'] * cluster_rect['area']
+                    a_r['from_address'] = a_r['from_address'] * cluster_rect['area']
+                    print(
+                        'to val: ' + str(a_r['to_address']) + 'from val: ' + str(a_r['from_address']) + 'label: ' + a_r[
+                            'unique_name'])
+                    address_rects.append(a_r)
+                    temp_lbl.append(a_r['unique_name'])
+
+    to_address = {}
+    address_rects.sort(key=lambda d: d['to_address'], reverse=True)
+
+    for to_address_rect in address_rects:
+
+        if not to_address_rect['printed']:
+            to_address = to_address_rect
+            cv2.putText(cropped_image, "to: " + to_address_rect['unique_name'],
+                        (int(to_address['x1'] + to_address['w'] / 2), int(to_address['y1'] + to_address['h'] / 2)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6, (0, 0, 0), 2)
+            to_address_rect['printed'] = True
+            break
+
+    from_address = {'flip_envelop': 0}
+    address_rects.sort(key=lambda d: d['from_address'], reverse=True)
+
+    for from_address_rect in address_rects:
+        if not from_address_rect['printed']:
+            possible_cells = get_from_address_cells(to_address['cells'])
+
+            if any(c in from_address_rect['cells'] for c in possible_cells):
+                from_address = from_address_rect
+                cv2.putText(cropped_image, "from: " + from_address_rect['unique_name'],
+                            (int(from_address['x1'] + from_address['w'] / 2),
+                             int(from_address['y1'] + from_address['h'] / 2)),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.6, (0, 0, 0), 2)
+                from_address_rect['printed'] = True
+                break
+
+    cv2.putText(cropped_image, "flip: " + str(from_address['flip_envelop'] + to_address['flip_envelop']),
+                (int(width_r / 2), int(height_r / 2)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7, (0, 0, 0), 2)
+
+    if to_address['flip_envelop'] + from_address['flip_envelop'] > 0:
+        flip_angle = 180
+    else:
+        flip_angle = 0
+
+    rotated_original = rotate_bound(original_cropped_image, rotation_angle)
+    scale_factor = get_scale_factors(cropped_image, rotated_original)
+
+    if len(to_address) > 1:
+        x, y, w, h = get_projected_rect(to_address_rect, scale_factor)
+        to_crop_img = rotated_original[y:y + h, x:x + w]
+        to_flip_original = rotate_bound(to_crop_img, flip_angle)
+        # save_output(image_name, crop_img, "to")
+        # cv2.imshow('to', crop_img)
+
+        if len(from_address) > 1:
+            x, y, w, h = get_projected_rect(from_address_rect, scale_factor)
+            from_crop_img = rotated_original[y:y + h, x:x + w]
+            from_flip_original = rotate_bound(from_crop_img, flip_angle)
+            # save_output(image_name, crop_img, "from")
+            # cv2.imshow('from', crop_img)
 
     for cell_ex in cells:
         start_point_rr = cell_ex['start_point']
@@ -680,4 +776,4 @@ def swt_main(image):
     # cv2.imshow('cropped image', cropped_image)
     # cv2.imshow('vis', vis)
 
-    return white_board, cropped_image, vis
+    return cropped_image, to_flip_original, from_flip_original

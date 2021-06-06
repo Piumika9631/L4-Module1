@@ -19,8 +19,8 @@ def correct_skewness(image):
     rotated = rotate_bound(image, angle)
 
     # draw the correction angle on the image so we can validate it
-    # cv2.putText(rotated, "Angle: {:.2f} degrees".format(angle_print),
-    #            (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+    cv2.putText(rotated, "Angle: {:.2f} degrees".format(angle_print),
+               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
     # show the output image
     # print("[INFO] angle: {:.3f}".format(angle_print))
 

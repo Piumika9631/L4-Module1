@@ -8,6 +8,7 @@ def get_largest_element(original_image):
     gray = cv2.cvtColor(image_copy, cv2.COLOR_BGR2GRAY)
     # Blurring to reduce high frequency noise to make our contour detection process more accurate
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    # cv2.imshow('blur', blurred)
     thresh = cv2.threshold(blurred, 60, 255, cv2.THRESH_BINARY)[1]
     contours, hierarchy = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     # Not necessary to draw, only for visualizing purpose
